@@ -38,6 +38,28 @@ class PollProvider extends ChangeNotifier {
     });
   }
 
+  /// Pre-fills the create-poll form with AI-suggested text so the user only
+  /// needs to add images and pick a location before submitting.
+  void prePopulate({required String title, required List<String> options}) {
+    titleController.text = title;
+
+    // Ensure we always have exactly 3 controllers (create screen expects 3).
+    while (optionNameControllers.length < 3) {
+      optionNameControllers.add(TextEditingController());
+    }
+    for (int i = 0; i < 3; i++) {
+      optionNameControllers[i].text = options[i];
+    }
+
+    // Reset images so the user picks fresh ones.
+    for (int i = 0; i < optionImages.length; i++) {
+      optionImages[i] = null;
+    }
+    latlng = null;
+
+    notifyListeners();
+  }
+
   void initializePoll(DocumentSnapshot poll) {
     final data = poll.data() as Map<String, dynamic>;
     titleController.text = data['title'];

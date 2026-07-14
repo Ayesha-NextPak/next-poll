@@ -5,10 +5,16 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:next_poll/Features/AuthScreen/auth_services.dart';
+import 'package:next_poll/Features/ChatScreens/chat_screen.dart';
+import 'package:next_poll/Features/ChatScreens/conversations_screen.dart';
 import 'package:next_poll/Features/HomeScreens/create_poll_screen.dart';
 import 'package:next_poll/Features/HomeScreens/edit_poll_screen.dart';
+import 'package:next_poll/Features/Provider/chat_provider.dart';
 import 'package:next_poll/Features/Provider/show_polls.dart';
+import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 import 'package:page_transition/page_transition.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:provider/provider.dart';
 
 class PollScreen extends StatefulWidget {
   const PollScreen({super.key});
@@ -35,6 +41,7 @@ class _PollScreenState extends State<PollScreen> {
       });
     } catch (e) {
       debugPrint('Error getting location: $e');
+      await Permission.location.request();
     }
   }
 
@@ -48,17 +55,19 @@ class _PollScreenState extends State<PollScreen> {
           centerTitle: true,
           actions: [
             IconButton(
-                onPressed: () => AuthServices.signOut(context),
-                icon: const Icon(Icons.logout))
+              onPressed: () => AuthServices.signOut(context),
+              icon: const Icon(Icons.logout),
+            ),
           ],
           bottom: const TabBar(
             indicatorSize: TabBarIndicatorSize.tab,
             indicatorColor: Colors.orange,
             unselectedLabelColor: Colors.black,
             labelStyle: TextStyle(
-                color: Colors.orange,
-                fontSize: 18,
-                fontWeight: FontWeight.w600),
+              color: Colors.orange,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+            ),
             tabs: [
               Tab(text: 'All'),
               Tab(text: 'Posted'),
@@ -67,23 +76,83 @@ class _PollScreenState extends State<PollScreen> {
           ),
         ),
         body: TabBarView(
-          children: [
-            _buildAllPolls(),
-            _buildPostedPolls(),
-            _buildVotedPolls(),
-          ],
+          children: [_buildAllPolls(), _buildPostedPolls(), _buildVotedPolls()],
         ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: () {
-            Navigator.push(
-                context,
-                PageTransition(
-                    child: CreatePollScreen(
-                      currentId: _currentUserId,
-                    ),
-                    type: PageTransitionType.fade));
-          },
-          child: const Icon(Icons.add),
+        floatingActionButton: SpeedDial(
+          icon: Icons.add,
+          activeIcon: Icons.close,
+          backgroundColor: Colors.orange,
+          foregroundColor: Colors.white,
+          activeBackgroundColor: Colors.orange.shade700,
+          activeForegroundColor: Colors.white,
+          elevation: 6,
+          spacing: 12,
+          spaceBetweenChildren: 8,
+          overlayOpacity: 0.4,
+          tooltip: 'Actions',
+          children: [
+            // ── Create Poll ─────────────────────────────────────────────────
+            SpeedDialChild(
+              child: const Icon(Icons.add_chart_rounded),
+              backgroundColor: Colors.orange,
+              foregroundColor: Colors.white,
+              label: 'Create Poll',
+              labelStyle: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+              ),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  PageTransition(
+                    child: CreatePollScreen(currentId: _currentUserId),
+                    type: PageTransitionType.fade,
+                  ),
+                );
+              },
+            ),
+            // ── New AI Chat ─────────────────────────────────────────────────
+            SpeedDialChild(
+              child: const Icon(Icons.chat_bubble_outline_rounded),
+              backgroundColor: Colors.deepPurple,
+              foregroundColor: Colors.white,
+              label: 'New AI Chat',
+              labelStyle: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+              ),
+              onTap: () {
+                context.read<ChatProvider>().resetForNewChat();
+                Navigator.push(
+                  context,
+                  PageTransition(
+                    child: const ChatScreen(),
+                    type: PageTransitionType.fade,
+                  ),
+                );
+              },
+            ),
+            // ── Chat History ────────────────────────────────────────────────
+            SpeedDialChild(
+              child: const Icon(Icons.history_rounded),
+              backgroundColor: Colors.teal,
+              foregroundColor: Colors.white,
+              label: 'Chat History',
+              labelStyle: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+              ),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  PageTransition(
+                    child: const ConversationsScreen(),
+                    type: PageTransitionType.fade,
+                  ),
+                );
+              },
+            ),
+          ],
         ),
       ),
     );
@@ -98,20 +167,21 @@ class _PollScreenState extends State<PollScreen> {
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Center(
-              child: CircularProgressIndicator(
-            color: Colors.orange,
-          ));
+            child: CircularProgressIndicator(color: Colors.orange),
+          );
         }
         final polls = snapshot.data!.docs;
         return polls.isEmpty
             ? const Center(
                 child: Text(
-                "No Posted Polls Available",
-                style: TextStyle(
+                  "No Posted Polls Available",
+                  style: TextStyle(
                     color: Colors.orange,
                     fontSize: 20,
-                    fontWeight: FontWeight.w500),
-              ))
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              )
             : ListView.builder(
                 itemCount: polls.length,
                 itemBuilder: (context, index) {
@@ -129,9 +199,8 @@ class _PollScreenState extends State<PollScreen> {
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Center(
-              child: CircularProgressIndicator(
-            color: Colors.orange,
-          ));
+            child: CircularProgressIndicator(color: Colors.orange),
+          );
         }
         final polls = snapshot.data!.docs;
 
@@ -150,12 +219,14 @@ class _PollScreenState extends State<PollScreen> {
         return votedPolls.isEmpty
             ? const Center(
                 child: Text(
-                "No Voted Poll Available",
-                style: TextStyle(
+                  "No Voted Poll Available",
+                  style: TextStyle(
                     color: Colors.orange,
                     fontSize: 20,
-                    fontWeight: FontWeight.w500),
-              ))
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              )
             : ListView.builder(
                 itemCount: votedPolls.length,
                 itemBuilder: (context, index) {
@@ -170,9 +241,8 @@ class _PollScreenState extends State<PollScreen> {
   Widget _buildAllPolls() {
     if (_userPosition == null) {
       return const Center(
-          child: CircularProgressIndicator(
-        color: Colors.orange,
-      ));
+        child: CircularProgressIndicator(color: Colors.orange),
+      );
     }
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance
@@ -182,9 +252,8 @@ class _PollScreenState extends State<PollScreen> {
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Center(
-              child: CircularProgressIndicator(
-            color: Colors.orange,
-          ));
+            child: CircularProgressIndicator(color: Colors.orange),
+          );
         }
         const double maxDistanceInMeters = 5000;
         final allPolls = snapshot.data!.docs;
@@ -195,21 +264,24 @@ class _PollScreenState extends State<PollScreen> {
           }
           final GeoPoint pollPosition = data['position'];
           final double distance = Geolocator.distanceBetween(
-              _userPosition!.latitude,
-              _userPosition!.longitude,
-              pollPosition.latitude,
-              pollPosition.longitude);
-          return distance<=maxDistanceInMeters;
+            _userPosition!.latitude,
+            _userPosition!.longitude,
+            pollPosition.latitude,
+            pollPosition.longitude,
+          );
+          return distance <= maxDistanceInMeters;
         }).toList();
         return polls.isEmpty
             ? const Center(
                 child: Text(
-                "No Poll Available",
-                style: TextStyle(
+                  "No Poll Available",
+                  style: TextStyle(
                     color: Colors.orange,
                     fontSize: 20,
-                    fontWeight: FontWeight.w500),
-              ))
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              )
             : ListView.builder(
                 itemCount: polls.length,
                 itemBuilder: (context, index) {
@@ -298,8 +370,11 @@ class _PollScreenState extends State<PollScreen> {
                           width: 50,
                           fit: BoxFit.cover,
                           errorBuilder: (context, error, stackTrace) =>
-                              const Icon(Icons.image_not_supported,
-                                  size: 50, color: Colors.grey),
+                              const Icon(
+                                Icons.image_not_supported,
+                                size: 50,
+                                color: Colors.grey,
+                              ),
                         ),
                       ),
                       const SizedBox(width: 15),
@@ -324,8 +399,9 @@ class _PollScreenState extends State<PollScreen> {
                             ),
                             if (showUserVote &&
                                 options[i]['voters'] != null &&
-                                (options[i]['voters'] as List)
-                                    .contains(_currentUserId))
+                                (options[i]['voters'] as List).contains(
+                                  _currentUserId,
+                                ))
                               const Padding(
                                 padding: EdgeInsets.only(top: 4),
                                 child: Text(
@@ -341,9 +417,7 @@ class _PollScreenState extends State<PollScreen> {
                         ),
                       ),
                       // Vote Button
-                      const SizedBox(
-                        width: 15,
-                      ),
+                      const SizedBox(width: 15),
                       if (showUserVote)
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(
@@ -352,11 +426,17 @@ class _PollScreenState extends State<PollScreen> {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 10),
+                              horizontal: 16,
+                              vertical: 10,
+                            ),
                           ),
                           onPressed: () {
                             ShowPolls.handleVote(
-                                poll.id, i, context, _currentUserId);
+                              poll.id,
+                              i,
+                              context,
+                              _currentUserId,
+                            );
                           },
                           child: const Text(
                             'Vote',

@@ -5,7 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 class EditPollScreen extends StatefulWidget {
   final DocumentSnapshot poll;
-  const EditPollScreen({Key? key, required this.poll}) : super(key: key);
+  const EditPollScreen({super.key, required this.poll});
 
   @override
   EditPollScreenState createState() => EditPollScreenState();
