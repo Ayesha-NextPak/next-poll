@@ -4,12 +4,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:next_poll/Features/AuthScreen/auth_services.dart';
 import 'package:next_poll/Features/ChatScreens/chat_screen.dart';
 import 'package:next_poll/Features/ChatScreens/conversations_screen.dart';
 import 'package:next_poll/Features/HomeScreens/create_poll_screen.dart';
 import 'package:next_poll/Features/HomeScreens/edit_poll_screen.dart';
 import 'package:next_poll/Features/Provider/chat_provider.dart';
+import 'package:next_poll/Features/Provider/poll_provider.dart';
 import 'package:next_poll/Features/Provider/show_polls.dart';
 import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 import 'package:page_transition/page_transition.dart';
@@ -31,6 +33,11 @@ class _PollScreenState extends State<PollScreen> {
   void initState() {
     super.initState();
     _fetchUserLocation();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = context.read<PollProvider>();
+      provider.loadAd(context, MediaQuery.of(context).size.width);
+      provider.loadInterstitialAd();
+    });
   }
 
   void _fetchUserLocation() async {
@@ -75,84 +82,122 @@ class _PollScreenState extends State<PollScreen> {
             ],
           ),
         ),
-        body: TabBarView(
-          children: [_buildAllPolls(), _buildPostedPolls(), _buildVotedPolls()],
+        body: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    _buildAllPolls(),
+                    _buildPostedPolls(),
+                    _buildVotedPolls(),
+                  ],
+                ),
+              ),
+              Consumer<PollProvider>(
+                builder: (context, pollProvider, _) {
+                  final bannerAd = pollProvider.bannerAd;
+                  if (bannerAd == null) return const SizedBox.shrink();
+                  return SizedBox(
+                    width: bannerAd.size.width.toDouble(),
+                    height: bannerAd.size.height.toDouble(),
+                    child: AdWidget(ad: bannerAd),
+                  );
+                },
+              ),
+            ],
+          ),
         ),
-        floatingActionButton: SpeedDial(
-          icon: Icons.add,
-          activeIcon: Icons.close,
-          backgroundColor: Colors.orange,
-          foregroundColor: Colors.white,
-          activeBackgroundColor: Colors.orange.shade700,
-          activeForegroundColor: Colors.white,
-          elevation: 6,
-          spacing: 12,
-          spaceBetweenChildren: 8,
-          overlayOpacity: 0.4,
-          tooltip: 'Actions',
-          children: [
-            // ── Create Poll ─────────────────────────────────────────────────
-            SpeedDialChild(
-              child: const Icon(Icons.add_chart_rounded),
-              backgroundColor: Colors.orange,
-              foregroundColor: Colors.white,
-              label: 'Create Poll',
-              labelStyle: const TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 14,
-              ),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  PageTransition(
-                    child: CreatePollScreen(currentId: _currentUserId),
-                    type: PageTransitionType.fade,
+        floatingActionButton: Consumer<PollProvider>(
+          builder: (context, pollProvider, _) {
+            final bannerHeight =
+                pollProvider.bannerAd?.size.height.toDouble() ?? 0;
+            return Padding(
+              padding: EdgeInsets.only(bottom: bannerHeight),
+              child: SpeedDial(
+                icon: Icons.add,
+                activeIcon: Icons.close,
+                backgroundColor: Colors.orange,
+                foregroundColor: Colors.white,
+                activeBackgroundColor: Colors.orange.shade700,
+                activeForegroundColor: Colors.white,
+                elevation: 6,
+                spacing: 12,
+                spaceBetweenChildren: 8,
+                overlayOpacity: 0.4,
+                tooltip: 'Actions',
+                children: [
+                  // ── Create Poll ───────────────────────────────────────────
+                  SpeedDialChild(
+                    child: const Icon(Icons.add_chart_rounded),
+                    backgroundColor: Colors.orange,
+                    foregroundColor: Colors.white,
+                    label: 'Create Poll',
+                    labelStyle: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                    onTap: () {
+                      context.read<PollProvider>().showInterstitialAd(
+                        context: context,
+                        onAdClosed: () {
+                          Navigator.push(
+                            context,
+                            PageTransition(
+                              child:
+                                  CreatePollScreen(currentId: _currentUserId),
+                              type: PageTransitionType.fade,
+                            ),
+                          );
+                        },
+                      );
+                    },
                   ),
-                );
-              },
-            ),
-            // ── New AI Chat ─────────────────────────────────────────────────
-            SpeedDialChild(
-              child: const Icon(Icons.chat_bubble_outline_rounded),
-              backgroundColor: Colors.deepPurple,
-              foregroundColor: Colors.white,
-              label: 'New AI Chat',
-              labelStyle: const TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 14,
-              ),
-              onTap: () {
-                context.read<ChatProvider>().resetForNewChat();
-                Navigator.push(
-                  context,
-                  PageTransition(
-                    child: const ChatScreen(),
-                    type: PageTransitionType.fade,
+                  // ── New AI Chat ───────────────────────────────────────────
+                  SpeedDialChild(
+                    child: const Icon(Icons.chat_bubble_outline_rounded),
+                    backgroundColor: Colors.deepPurple,
+                    foregroundColor: Colors.white,
+                    label: 'New AI Chat',
+                    labelStyle: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                    onTap: () {
+                      context.read<ChatProvider>().resetForNewChat();
+                      Navigator.push(
+                        context,
+                        PageTransition(
+                          child: const ChatScreen(),
+                          type: PageTransitionType.fade,
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
-            // ── Chat History ────────────────────────────────────────────────
-            SpeedDialChild(
-              child: const Icon(Icons.history_rounded),
-              backgroundColor: Colors.teal,
-              foregroundColor: Colors.white,
-              label: 'Chat History',
-              labelStyle: const TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 14,
-              ),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  PageTransition(
-                    child: const ConversationsScreen(),
-                    type: PageTransitionType.fade,
+                  // ── Chat History ──────────────────────────────────────────
+                  SpeedDialChild(
+                    child: const Icon(Icons.history_rounded),
+                    backgroundColor: Colors.teal,
+                    foregroundColor: Colors.white,
+                    label: 'Chat History',
+                    labelStyle: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        PageTransition(
+                          child: const ConversationsScreen(),
+                          type: PageTransitionType.fade,
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
-          ],
+                ],
+              ),
+            );
+          },
         ),
       ),
     );

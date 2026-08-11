@@ -6,7 +6,9 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:developer';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:next_poll/Features/Services/connectivity_service.dart';
 import 'package:next_poll/Features/helper/database_helper.dart';
@@ -17,8 +19,15 @@ class PollProvider extends ChangeNotifier {
   final List<TextEditingController> optionNameControllers = [
     TextEditingController(),
     TextEditingController(),
-    TextEditingController()
+    TextEditingController(),
   ];
+  BannerAd? bannerAd;
+  InterstitialAd? interstitialAd;
+  bool _isInterstitialAdReady = false;
+
+  final bannerAdUnitId = 'ca-app-pub-3940256099942544/9214589741';
+  // Test interstitial ad unit ID – replace with your real one in production.
+  final interstitialAdUnitId = 'ca-app-pub-3940256099942544/1033173712';
   final List<File?> optionImages = [null, null, null];
   final List<String?> existingImageUrls = [];
   GeoPoint? latlng;
@@ -36,6 +45,196 @@ class PollProvider extends ChangeNotifier {
         await trySyncLocalPolls();
       }
     });
+  }
+
+  void loadAd(BuildContext context, double screenWidth) async {
+    // Dispose any previously loaded ad before creating a new one.
+    try {
+      bannerAd?.dispose();
+      bannerAd = null;
+
+      // Get an AnchoredAdaptiveBannerAdSize before loading the ad.
+      final size =
+          await AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(
+            screenWidth.truncate(),
+          );
+      if (size == null) {
+        debugPrint("Banner ad: unable to get anchored adaptive banner size.");
+        return;
+      }
+
+      final ad = BannerAd(
+        adUnitId: bannerAdUnitId,
+        request: const AdRequest(),
+        size: size,
+        listener: BannerAdListener(
+          // Ad loaded and is ready to display.
+          onAdLoaded: (ad) {
+            debugPrint('Banner ad loaded.');
+            _logAdEvent('loaded', adType: 'banner');
+            bannerAd = ad as BannerAd;
+            notifyListeners();
+          },
+          // Ad failed to load.
+          onAdFailedToLoad: (ad, err) {
+            debugPrint('Banner ad failed to load: $err');
+            _logAdEvent(
+              'load_failed',
+              adType: 'banner',
+              extra: {'errorCode': err.code, 'errorMessage': err.message},
+            );
+            ad.dispose();
+            bannerAd = null;
+            notifyListeners();
+          },
+          // A full-screen view opened (e.g. user tapped and an overlay appeared).
+          onAdOpened: (ad) {
+            debugPrint('Banner ad opened full screen.');
+            _logAdEvent('opened', adType: 'banner');
+          },
+          // The full-screen view was closed and the app is in the foreground again.
+          onAdClosed: (ad) {
+            debugPrint('Banner ad closed.');
+            _logAdEvent('closed', adType: 'banner');
+          },
+          // Ad impression was recorded.
+          onAdImpression: (ad) {
+            debugPrint('Banner ad recorded an impression.');
+            _logAdEvent('impression', adType: 'banner');
+          },
+          // User tapped the ad.
+          onAdClicked: (ad) {
+            debugPrint('Banner ad was clicked.');
+            _logAdEvent('clicked', adType: 'banner');
+          },
+        ),
+      );
+      ad.load();
+    } catch (e) {
+      log("PollProvider: Error loading banner ad: $e");
+    }
+  }
+
+  // ── Interstitial ad helpers ──────────────────────────────────────────────
+
+  /// Writes a single ad-event document to Firestore under `ad_events/`.
+  /// Fields logged: userId, adType, event, timestamp, and any extra data.
+  Future<void> _logAdEvent(
+    String event, {
+    required String adType,
+    Map<String, dynamic> extra = const {},
+  }) async {
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid ?? 'anonymous';
+      await FirebaseFirestore.instance.collection('ad_events').add({
+        'userId': userId,
+        'adType': adType,
+        'event': event,
+        'timestamp': FieldValue.serverTimestamp(),
+        ...extra,
+      });
+    } catch (e) {
+      log('AdEvent: failed to log "$event": $e');
+    }
+  }
+
+  void loadInterstitialAd() {
+    InterstitialAd.load(
+      adUnitId: interstitialAdUnitId,
+      request: const AdRequest(),
+      adLoadCallback: InterstitialAdLoadCallback(
+        onAdLoaded: (ad) {
+          interstitialAd = ad;
+          _isInterstitialAdReady = true;
+          debugPrint('Interstitial ad loaded.');
+        },
+        onAdFailedToLoad: (error) {
+          debugPrint('Interstitial ad failed to load: $error');
+          _logAdEvent(
+            'load_failed',
+            adType: 'interstitial',
+            extra: {'errorCode': error.code, 'errorMessage': error.message},
+          );
+          interstitialAd = null;
+          _isInterstitialAdReady = false;
+        },
+      ),
+    );
+  }
+
+  /// Attaches the full [FullScreenContentCallback] with Firebase logging and
+  /// then shows the ad. Calls [onAdClosed] after dismiss or on any failure.
+  void showInterstitialAd({
+    required VoidCallback onAdClosed,
+    required BuildContext context,
+  }) {
+    if (!_isInterstitialAdReady || interstitialAd == null) {
+      // Ad not ready — navigate immediately so the user is never blocked.
+      _logAdEvent(
+        'skipped',
+        adType: 'interstitial',
+        extra: {'reason': 'ad_not_ready'},
+      );
+      onAdClosed();
+      return;
+    }
+
+    interstitialAd!.fullScreenContentCallback = FullScreenContentCallback(
+      // Ad became visible on screen.
+      onAdShowedFullScreenContent: (ad) {
+        debugPrint('Interstitial ad showed full screen content.');
+        _logAdEvent('showed', adType: 'interstitial');
+      },
+
+      // Ad could not be shown (e.g. activity not available).
+      onAdFailedToShowFullScreenContent: (ad, error) {
+        debugPrint('Interstitial ad failed to show: $error');
+        _logAdEvent(
+          'show_failed',
+          adType: 'interstitial',
+          extra: {'errorCode': error.code, 'errorMessage': error.message},
+        );
+        ad.dispose();
+        interstitialAd = null;
+        _isInterstitialAdReady = false;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to load ad. Proceeding...')),
+        );
+        onAdClosed(); // Don't block the user.
+      },
+
+      // User closed the ad — this is the normal completion path.
+      onAdDismissedFullScreenContent: (ad) {
+        debugPrint('Interstitial ad was dismissed.');
+        _logAdEvent('dismissed', adType: 'interstitial');
+        ad.dispose();
+        interstitialAd = null;
+        _isInterstitialAdReady = false;
+        loadInterstitialAd(); // Pre-load for the next tap.
+        onAdClosed();
+      },
+
+      // An impression was recorded by the ad network.
+      onAdImpression: (ad) {
+        debugPrint('Interstitial ad recorded an impression.');
+        _logAdEvent('impression', adType: 'interstitial');
+      },
+
+      // User tapped the ad.
+      onAdClicked: (ad) {
+        debugPrint('Interstitial ad was clicked.');
+        _logAdEvent('clicked', adType: 'interstitial');
+      },
+    );
+
+    interstitialAd!.show();
+  }
+
+  @override
+  void dispose() {
+    bannerAd?.dispose();
+    interstitialAd?.dispose();
+    super.dispose();
   }
 
   /// Pre-fills the create-poll form with AI-suggested text so the user only
@@ -77,8 +276,9 @@ class PollProvider extends ChangeNotifier {
   }
 
   Future<void> pickImage(int index) async {
-    final pickedFile =
-        await _imagePicker.pickImage(source: ImageSource.gallery);
+    final pickedFile = await _imagePicker.pickImage(
+      source: ImageSource.gallery,
+    );
     if (pickedFile != null) {
       optionImages[index] = File(pickedFile.path);
       notifyListeners();
@@ -87,9 +287,9 @@ class PollProvider extends ChangeNotifier {
 
   Future<String?> uploadImage(File file, String pollId, int i) async {
     try {
-      final storageRef = FirebaseStorage.instance
-          .ref()
-          .child('polls/$pollId/${i.toString()}_$pollId.jpg');
+      final storageRef = FirebaseStorage.instance.ref().child(
+        'polls/$pollId/${i.toString()}_$pollId.jpg',
+      );
       final uploadTask = await storageRef.putFile(file);
       return await uploadTask.ref.getDownloadURL();
     } catch (e) {
@@ -99,7 +299,9 @@ class PollProvider extends ChangeNotifier {
   }
 
   Future<void> checkSubmissionPossible(
-      String creatorId, BuildContext context) async {
+    String creatorId,
+    BuildContext context,
+  ) async {
     final isOnline = await ConnectivityService().checkNow();
     if (isOnline) {
       await submitPoll(creatorId, context);
@@ -110,18 +312,21 @@ class PollProvider extends ChangeNotifier {
         final optionNames = optionNameControllers.map((e) => e.text).toList();
         final optionFiles = optionImages;
         await DatabaseHelper().insertPollWithFiles(
-            pollId: generateRandomId(),
-            title: titleController.text,
-            creatorId: creatorId,
-            createdAt: DateTime.now(),
-            optionNames: optionNames,
-            optionFiles: optionFiles);
+          pollId: generateRandomId(),
+          title: titleController.text,
+          creatorId: creatorId,
+          createdAt: DateTime.now(),
+          optionNames: optionNames,
+          optionFiles: optionFiles,
+        );
         ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No internet. Poll saved locally')));
+          const SnackBar(content: Text('No internet. Poll saved locally')),
+        );
         await SyncPrefs.setUnsyncedStatus(true);
       } catch (_) {
         ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to save poll locally')));
+          const SnackBar(content: Text('Failed to save poll locally')),
+        );
       }
     }
   }
@@ -153,18 +358,19 @@ class PollProvider extends ChangeNotifier {
             firebaseOptions.add({
               'name': name,
               'imageUrl': imageUrl,
-              'votes': option['votes'] ?? 0
+              'votes': option['votes'] ?? 0,
             });
           }
-          final createdAt =
-              DateTime.fromMicrosecondsSinceEpoch(poll['createdAt']);
+          final createdAt = DateTime.fromMicrosecondsSinceEpoch(
+            poll['createdAt'],
+          );
           await FirebaseFirestore.instance.collection('polls').doc(pollId).set({
             'pollId': pollId,
             'title': title,
             'creatorId': creatorId,
             'createdAt': createdAt,
             'total_votes': totalVotes,
-            'options': firebaseOptions
+            'options': firebaseOptions,
           });
         } else if (status == 'update') {
           final List<Map<String, dynamic>> firebaseOptions = [];
@@ -182,7 +388,7 @@ class PollProvider extends ChangeNotifier {
             firebaseOptions.add({
               'name': name,
               'imageUrl': imageUrl,
-              'votes': option['votes'] ?? 0
+              'votes': option['votes'] ?? 0,
             });
           }
           await FirebaseFirestore.instance
@@ -199,23 +405,24 @@ class PollProvider extends ChangeNotifier {
             for (var option in options) {
               if (option['imageUrl'] != null) {
                 String imageUrl = option['imageUrl'];
-                String? filePath =
-                    Uri.decodeFull(Uri.parse(imageUrl).pathSegments.lastWhere(
-                          (element) => element.contains('polls'),
-                          orElse: () => '',
-                        ));
-                if(filePath.isNotEmpty)
-                {
+                String? filePath = Uri.decodeFull(
+                  Uri.parse(imageUrl).pathSegments.lastWhere(
+                    (element) => element.contains('polls'),
+                    orElse: () => '',
+                  ),
+                );
+                if (filePath.isNotEmpty) {
                   await FirebaseStorage.instance.ref(filePath).delete();
                 }
               }
             }
-            await FirebaseFirestore.instance.collection('polls').doc(poll['id']).delete();
-
+            await FirebaseFirestore.instance
+                .collection('polls')
+                .doc(poll['id'])
+                .delete();
           }
         }
-        for(var poll in localPolls)
-        {
+        for (var poll in localPolls) {
           await db.deletePoll(poll['id']);
         }
         await SyncPrefs.setUnsyncedStatus(false);
@@ -247,7 +454,7 @@ class PollProvider extends ChangeNotifier {
       await pollDoc.set({
         "pollId": pollId,
         'title': titleController.text,
-        'position':latlng,
+        'position': latlng,
         'options': options,
         'createdAt': FieldValue.serverTimestamp(),
         'creatorId': creatorId,
@@ -255,12 +462,14 @@ class PollProvider extends ChangeNotifier {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Poll created successfully!')));
+        const SnackBar(content: Text('Poll created successfully!')),
+      );
       Navigator.pop(context);
     } catch (e) {
       log("Error submitting poll: $e");
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Failed to create poll')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Failed to create poll')));
     } finally {
       isLoading = false;
       notifyListeners();
@@ -287,38 +496,37 @@ class PollProvider extends ChangeNotifier {
           }
         }
 
-        updatedOptions.add({
-          'name': name,
-          'imageUrl': imageUrl,
-        });
+        updatedOptions.add({'name': name, 'imageUrl': imageUrl});
       }
 
       if (isOnline) {
-        await FirebaseFirestore.instance
-            .collection('polls')
-            .doc(pollId)
-            .update({
-          'title': titleController.text,
-          'options': updatedOptions,
-        });
+        await FirebaseFirestore.instance.collection('polls').doc(pollId).update(
+          {'title': titleController.text, 'options': updatedOptions},
+        );
 
         isLoading = false;
         ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Poll updated successfully!')));
+          const SnackBar(content: Text('Poll updated successfully!')),
+        );
       } else {
         final db = DatabaseHelper();
         await db.updatePollWithOptions(
-            pollId, titleController.text, updatedOptions);
+          pollId,
+          titleController.text,
+          updatedOptions,
+        );
         await SyncPrefs.setUnsyncedStatus(true);
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Poll updated locally!')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Poll updated locally!')));
       }
       Navigator.pop(context);
       notifyListeners();
     } catch (e) {
       isLoading = false;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Failed to create poll')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Failed to create poll')));
       notifyListeners();
       rethrow; // Handle errors appropriately in the UI
     }
@@ -326,14 +534,15 @@ class PollProvider extends ChangeNotifier {
 
   bool validateForm(BuildContext context) {
     if (titleController.text.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Title is required')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Title is required')));
       return false;
     }
-    if(latlng==null)
-    {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Location is required')));
+    if (latlng == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Location is required')));
       return false;
     }
     for (int i = 0; i < optionNameControllers.length; i++) {
@@ -357,7 +566,9 @@ class PollProvider extends ChangeNotifier {
     const chars =
         'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     final rand = math.Random.secure();
-    return List.generate(length, (index) => chars[rand.nextInt(chars.length)])
-        .join();
+    return List.generate(
+      length,
+      (index) => chars[rand.nextInt(chars.length)],
+    ).join();
   }
 }
